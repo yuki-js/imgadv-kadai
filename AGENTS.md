@@ -59,5 +59,5 @@ Generate the following outputs strictly required for the report:
 # Output Requirements
 * Provide the executable code.
 * Save the plots as high-resolution image files.
-* `src/crypto_lda/` に出力してね。 
-* `src/crypto_pca/` に以前やったファイルがあるから借りよう。結構やってることが似ているからすごく参考になるよ。
+* program should be in `src/` directory.
+* Save plots in `outputs/` directory.
