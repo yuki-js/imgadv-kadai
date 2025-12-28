@@ -139,3 +139,6 @@ Desktop.ini
 *.key
 *.p12
 *.pfx
+
+# datasets
+datasets/*
