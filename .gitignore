@@ -105,3 +105,37 @@ outputs/*
 !data/README.md
 !outputs/.gitkeep
 !outputs/README.md
+
+# =========================================
+# Language-specific: MATLAB / R
+# =========================================
+# MATLAB autosave and generated artifacts
+*.asv
+*.m~
+*.mlx~
+*.mex*
+slprj/
+simulinkcache/
+*.slxc
+
+# R session and project files
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.Rproj.user/
+renv/library/
+renv/python/
+renv/staging/
+
+# Direnv
+.direnv/
+
+# Additional OS files
+Desktop.ini
+
+# Defensive secret/material keys
+*.pem
+*.key
+*.p12
+*.pfx

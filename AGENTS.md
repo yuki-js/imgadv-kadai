@@ -59,5 +59,18 @@ Generate the following outputs strictly required for the report:
 # Output Requirements
 * Provide the executable code.
 * Save the plots as high-resolution image files.
-* program should be in `src/` directory.
-* Save plots in `outputs/` directory.
+# Dataset
+
+
+Create a new dataset, which holds cryptocurrency price data over time. 100 high volume cryptocurrencies are selected, and their daily closing prices over the past 3 years are collected. The dataset is structured such that each row represents a different cryptocurrency, and each column represents the closing price on a specific day.
+
+## Where to get data
+
+Binance API is a good source for cryptocurrency price data. Coingecko is bad since it has rate limits and data access restrictions.
+
+For top 100 cryptocurrencies by market cap, you can pick up at the point of 3 years ago. It's because some cryptos are new and don't have 3 years data.
+
+## Notes
+
+- Use multiple files for better readability.
+- you must split the data collection phase, and other phase into different files.
