@@ -9,6 +9,17 @@ Terminology:
 Main operations:
     - Fit a subspace by PCA/SVD
     - Compute canonical angles between two subspaces
+    - Compute a *difference subspace* between two subspaces
+
+Notes on the difference subspace:
+    We use a standard symmetric formulation based on projection matrices.
+
+    Let P1 = U1 U1^T and P2 = U2 U2^T. Define A = P1 - P2 (symmetric).
+    Eigenvectors of A associated with large |eigenvalues| capture directions
+    where the two subspaces differ the most.
+
+    - positive eigenvalue: direction more aligned with S1 than S2
+    - negative eigenvalue: direction more aligned with S2 than S1
 """
 
 from __future__ import annotations
@@ -156,6 +167,51 @@ def canonical_angles(s1: Subspace, s2: Subspace) -> Tuple[Array, Array]:
     s_clipped = np.clip(s, 0.0, 1.0)
     angles = np.arccos(s_clipped)
     return angles, s
+
+
+def difference_subspace(
+    s1: Subspace,
+    s2: Subspace,
+    *,
+    r: int = 3,
+) -> Tuple[Subspace, Array]:
+    """Compute an r-dimensional difference subspace between S1 and S2.
+
+    We use a symmetric formulation based on projection matrices:
+        P1 = U1 U1^T, P2 = U2 U2^T, A = P1 - P2.
+
+    Eigenvectors of A with largest |eigenvalue| form the difference subspace.
+
+    Returns:
+        ds: Difference subspace with basis shape (D, r)
+        evals: Selected eigenvalues (r,)
+    """
+
+    u1 = np.asarray(s1.basis)
+    u2 = np.asarray(s2.basis)
+
+    if u1.ndim != 2 or u2.ndim != 2:
+        raise ValueError("Subspace bases must be 2D")
+    if u1.shape[0] != u2.shape[0]:
+        raise ValueError(f"Ambient dimension mismatch: {u1.shape[0]} vs {u2.shape[0]}")
+
+    d = int(u1.shape[0])
+    r = int(r)
+    if r <= 0:
+        raise ValueError("r must be positive")
+    if r > d:
+        raise ValueError(f"r must be <= ambient dimension D (= {d}); got r={r}")
+
+    p1 = u1 @ u1.T
+    p2 = u2 @ u2.T
+    a = p1 - p2
+
+    evals, evecs = np.linalg.eigh(a)  # ascending
+    order = np.argsort(np.abs(evals))[::-1][:r]
+
+    basis = _orthonormalize_columns(evecs[:, order])
+    ds = Subspace(basis=basis, mean=np.zeros((d,), dtype=basis.dtype))
+    return ds, evals[order]
 
 
 def radians_to_degrees(rad: Array) -> Array:
