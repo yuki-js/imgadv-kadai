@@ -140,5 +140,9 @@ Desktop.ini
 *.p12
 *.pfx
 
-# datasets
+# datasets (project local)
 datasets/*
+
+# aoki dataset (generated; too large for git)
+aoki-dataset/*.npy
+aoki-dataset/**/*.npy
