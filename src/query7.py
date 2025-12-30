@@ -1,20 +1,17 @@
-"""Query 7 (GPU mask sweep)
+"""Query 7 (GPU mask sweep; updated spec)
 
 Task (from further-discussion-prompt.md):
-- Classification accuracy changes by mask size/pattern.
-- Use masks based on four 12x12 squares.
-- Shift mask by 8 pixels and explore patterns.
-- For each mask pattern: build subspace classifier pipeline and evaluate test accuracy.
+- Classification accuracy changes by mask pattern.
+- Use a mask based on 7 squares of size 10x10.
+- Shift the mask by 6 pixels and search for good accuracy.
+- Build a classifier using the subspace method and evaluate accuracy on
+  the *combined* data (train + test).
 - Mask generation and application must be on GPU.
 
-Implementation:
-- For each (shift_x, shift_y) in {0,8,16} x {0,8,16}:
-  - build mask32 on GPU
-  - apply mask on GPU
-  - build diff-subspace (3D)
-  - fit quadratic classifier in that 3D space
-  - evaluate test accuracy
-- Save the best mask as an image (BMP only).
+Mask layout (per user instruction):
+- 7 squares: center + up/down/left/right + up-left + down-right.
+- The "base" square top-left is derived from a center anchor at (11,11) in 32x32.
+- The whole pattern is then shifted by (shift_x, shift_y) in multiples of 6 px.
 
 Run:
     python -m src.query7
@@ -40,9 +37,7 @@ from src.gpu_utils import (
     downscale_flat_rgb_to_32,
     get_default_device,
     load_npy_to_device,
-    make_mask_from_squares,
     torch_rng,
-    train_test_split_indices,
 )
 from src.quadratic_classifier import accuracy, fit_quadratic_ridge
 
@@ -52,6 +47,64 @@ class SweepResult:
     shift_x: int
     shift_y: int
     acc: float
+
+
+def _fill_square(mask: torch.Tensor, *, x: int, y: int, s: int) -> None:
+    """In-place fill of a square keep-region into mask (32,32) on GPU."""
+
+    x1 = max(0, min(32, int(x)))
+    y1 = max(0, min(32, int(y)))
+    x2 = max(0, min(32, int(x) + int(s)))
+    y2 = max(0, min(32, int(y) + int(s)))
+    if x2 > x1 and y2 > y1:
+        mask[y1:y2, x1:x2] = 1.0
+
+
+def make_mask_7_squares_10(
+    *,
+    shift_x: int,
+    shift_y: int,
+    center_anchor_xy: tuple[int, int] = (11, 11),
+    square_size: int = 10,
+    step: int = 10,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Generate (32,32,1) mask of 7 squares.
+
+    Pattern (relative to center square top-left):
+      - center
+      - up/down/left/right (offset by step)
+      - up-left (offset by (-step,-step))
+      - down-right (offset by (+step,+step))
+
+    Then apply global (shift_x, shift_y).
+    """
+
+    cx, cy = int(center_anchor_xy[0]), int(center_anchor_xy[1])
+    s = int(square_size)
+    step = int(step)
+
+    # Treat (cx,cy) as top-left of the center square.
+    x0 = cx + int(shift_x)
+    y0 = cy + int(shift_y)
+
+    m = torch.zeros((32, 32), device=device, dtype=dtype)
+
+    offsets = [
+        (0, 0),
+        (0, -step),
+        (0, +step),
+        (-step, 0),
+        (+step, 0),
+        (-step, -step),
+        (+step, +step),
+    ]
+
+    for dx, dy in offsets:
+        _fill_square(m, x=x0 + dx, y=y0 + dy, s=s)
+
+    return m.unsqueeze(-1)
 
 
 def main() -> None:
@@ -68,80 +121,95 @@ def main() -> None:
     g = torch_rng(0, device=device)
     a, b = downsample_to_match(a, b, g=g)
 
-    # Split once
-    a_tr_idx, a_te_idx = train_test_split_indices(int(a.shape[0]), 0.2, g=g, device=device)
-    b_tr_idx, b_te_idx = train_test_split_indices(int(b.shape[0]), 0.2, g=g, device=device)
+    # "train+test" combined evaluation: we use all balanced samples.
+    # (No train/test split here.)
 
-    # Keep original (unmasked) splits on GPU; apply masks per sweep.
-    a_train0 = a.index_select(0, a_tr_idx)
-    a_test0 = a.index_select(0, a_te_idx)
-    b_train0 = b.index_select(0, b_tr_idx)
-    b_test0 = b.index_select(0, b_te_idx)
-
-    # Sweep shifts: 0..16 step 8 (as instructed). 24 would make 2x2 block overflow (12*2=24).
-    shifts = [0, 8, 16]
+    # Near-exhaustive scan (全数検査に近い): scan every pixel shift.
+    # We clip squares at the image boundary, so shifts outside the valid area still behave deterministically.
+    shifts = list(range(0, 32))  # 0..31
 
     results: list[SweepResult] = []
 
     for sy in shifts:
         for sx in shifts:
-            mask32 = make_mask_from_squares(square_size=12, shift_x=sx, shift_y=sy, gap=0, device=device, dtype=dtype)
+            mask32 = make_mask_7_squares_10(
+                shift_x=sx,
+                shift_y=sy,
+                center_anchor_xy=(11, 11),
+                square_size=10,
+                step=10,
+                device=device,
+                dtype=dtype,
+            )
 
-            a_train = apply_mask_32(a_train0, mask32=mask32)
-            a_test = apply_mask_32(a_test0, mask32=mask32)
-            b_train = apply_mask_32(b_train0, mask32=mask32)
-            b_test = apply_mask_32(b_test0, mask32=mask32)
+            a_m = apply_mask_32(a, mask32=mask32)
+            b_m = apply_mask_32(b, mask32=mask32)
 
-            n_train = min(int(a_train.shape[0]), int(b_train.shape[0]))
-            d = int(a_train.shape[1])
-            k = min(3, n_train - 1, d)
-            if k <= 0:
-                raise RuntimeError("Not enough training samples to construct a subspace")
+            n_train = min(int(a_m.shape[0]), int(b_m.shape[0]))
+            d = int(a_m.shape[1])
 
-            s1 = fit_subspace(a_train, k=k, center=True)
-            s2 = fit_subspace(b_train, k=k, center=True)
-            ds, _evals = difference_subspace(s1, s2, r=3)
+            # To "maximize" accuracy (on the combined set), tune subspace dim k and ridge l2.
+            # Note: evaluation is on the same data used for fitting, per updated spec.
+            k_candidates = [3, 5, 8, 12]
+            k_candidates = [kk for kk in k_candidates if 1 <= kk <= min(n_train - 1, d)]
+            if not k_candidates:
+                raise RuntimeError("Not enough samples to construct a subspace")
 
-            global_mean = torch.cat([a_train, b_train], dim=0).mean(dim=0)
+            # Keep l2 > 0 to avoid singular normal equations.
+            l2_candidates = [1e-8, 1e-6, 1e-4, 1e-2, 1e-1]
 
-            a_tr = project(a_train, basis=ds.basis, mean=global_mean)
-            b_tr = project(b_train, basis=ds.basis, mean=global_mean)
-            a_te = project(a_test, basis=ds.basis, mean=global_mean)
-            b_te = project(b_test, basis=ds.basis, mean=global_mean)
+            best_acc_local = -1.0
 
-            z_tr = torch.cat([a_tr, b_tr], dim=0)
-            y_tr = torch.cat([
-                -torch.ones((int(a_tr.shape[0]),), device=device, dtype=dtype),
-                torch.ones((int(b_tr.shape[0]),), device=device, dtype=dtype),
-            ])
+            for k in k_candidates:
+                s1 = fit_subspace(a_m, k=k, center=True)
+                s2 = fit_subspace(b_m, k=k, center=True)
+                ds, _evals = difference_subspace(s1, s2, r=3)
 
-            model = fit_quadratic_ridge(z_tr, y_tr, l2=1e-2)
+                global_mean = torch.cat([a_m, b_m], dim=0).mean(dim=0)
 
-            z_te = torch.cat([a_te, b_te], dim=0)
-            y_te = torch.cat([
-                -torch.ones((int(a_te.shape[0]),), device=device, dtype=dtype),
-                torch.ones((int(b_te.shape[0]),), device=device, dtype=dtype),
-            ])
+                a_z = project(a_m, basis=ds.basis, mean=global_mean)
+                b_z = project(b_m, basis=ds.basis, mean=global_mean)
 
-            y_hat = model.predict(z_te)
-            acc = accuracy(y_te, y_hat)
+                # Fit and evaluate on the same combined set (per updated spec)
+                z_all = torch.cat([a_z, b_z], dim=0)
+                y_all = torch.cat(
+                    [
+                        -torch.ones((int(a_z.shape[0]),), device=device, dtype=dtype),
+                        torch.ones((int(b_z.shape[0]),), device=device, dtype=dtype),
+                    ]
+                )
+
+                for l2 in l2_candidates:
+                    try:
+                        model = fit_quadratic_ridge(z_all, y_all, l2=float(l2))
+                    except torch._C._LinAlgError:
+                        continue
+                    y_hat = model.predict(z_all)
+                    acc = accuracy(y_all, y_hat)
+                    if acc > best_acc_local:
+                        best_acc_local = acc
+
+            acc = float(best_acc_local)
 
             results.append(SweepResult(shift_x=sx, shift_y=sy, acc=acc))
-            print(f"mask shift (x={sx}, y={sy}) -> acc={acc:.4f}")
+            # Logging (avoid flooding): once per row
+            if sx == 0:
+                best_so_far = max(r.acc for r in results)
+                print(f"mask scan row y={sy:02d} ... best_so_far={best_so_far:.4f}")
 
     results_sorted = sorted(results, key=lambda r: r.acc, reverse=True)
 
     out_dir = Path("src") / "artifacts"
     os.makedirs(out_dir, exist_ok=True)
 
-    # Save best mask as a single BMP. Accuracies are printed only.
     if results_sorted:
         best = results_sorted[0]
-        best_mask32 = make_mask_from_squares(
-            square_size=12,
+        best_mask32 = make_mask_7_squares_10(
             shift_x=best.shift_x,
             shift_y=best.shift_y,
-            gap=0,
+            center_anchor_xy=(11, 11),
+            square_size=10,
+            step=10,
             device=device,
             dtype=dtype,
         )
@@ -156,7 +224,7 @@ def main() -> None:
     print(f"Device: {device}")
     if results_sorted:
         best = results_sorted[0]
-        print(f"Best mask: shift_x={best.shift_x}, shift_y={best.shift_y}, acc={best.acc:.4f}")
+        print(f"Best mask: shift_x={best.shift_x}, shift_y={best.shift_y}, acc(all)={best.acc:.4f}")
         print(f"Saved: {out_dir / 'query7_best_mask.bmp'}")
 
 

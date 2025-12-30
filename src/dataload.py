@@ -36,7 +36,11 @@ class DatasetConfig:
 
 
 def _read_bmp_mask_32(path: str | Path) -> np.ndarray:
-    """Read a 32x32 BMP (24-bit, uncompressed) and return mask (32,32,1) in [0,1].
+    """Read a 32x32 BMP and return mask (32,32,1) in [0,1].
+
+    Supported formats (minimal extension):
+        - 24-bit uncompressed (BI_RGB)
+        - 8-bit uncompressed (BI_RGB) with palette (grayscale or indexed)
 
     Conventions:
         - White (255) => keep (1.0)
@@ -66,29 +70,53 @@ def _read_bmp_mask_32(path: str | Path) -> np.ndarray:
         raise ValueError(f"Unsupported BMP planes={planes} in {p}")
     if (w, abs(h)) != (32, 32):
         raise ValueError(f"Mask BMP must be 32x32; got {w}x{abs(h)} in {p}")
-    if bpp != 24:
-        raise ValueError(f"Mask BMP must be 24-bit; got bpp={bpp} in {p}")
+    if bpp not in (8, 24):
+        raise ValueError(f"Mask BMP must be 8-bit or 24-bit; got bpp={bpp} in {p}")
     if compression != 0:
         raise ValueError(f"Mask BMP must be uncompressed (BI_RGB); got compression={compression} in {p}")
 
     height = abs(h)
-    # each row padded to 4-byte boundary
-    row_bytes = ((w * 3 + 3) // 4) * 4
-
     mask = np.zeros((height, w), dtype=np.float64)
 
     # BMP stores rows bottom-up if h > 0, top-down if h < 0
     bottom_up = h > 0
 
-    for row in range(height):
-        src_row = (height - 1 - row) if bottom_up else row
-        start = pixel_offset + src_row * row_bytes
-        end = start + w * 3
-        row_data = data[start:end]
-        # BGR triplets; use luminance-like mean
-        rgb = np.frombuffer(row_data, dtype=np.uint8).reshape(w, 3)[:, ::-1]
-        v = rgb.mean(axis=1).astype(np.float64) / 255.0
-        mask[row, :] = v
+    if bpp == 24:
+        # each row padded to 4-byte boundary
+        row_bytes = ((w * 3 + 3) // 4) * 4
+
+        for row in range(height):
+            src_row = (height - 1 - row) if bottom_up else row
+            start = pixel_offset + src_row * row_bytes
+            end = start + w * 3
+            row_data = data[start:end]
+            # BGR triplets; use luminance-like mean
+            rgb = np.frombuffer(row_data, dtype=np.uint8).reshape(w, 3)[:, ::-1]
+            v = rgb.mean(axis=1).astype(np.float64) / 255.0
+            mask[row, :] = v
+
+    else:  # bpp == 8
+        # Palette is located between the headers and the pixel array.
+        # Number of palette entries can be inferred from pixel_offset.
+        palette_bytes = pixel_offset - (14 + dib_size)
+        if palette_bytes <= 0 or palette_bytes % 4 != 0:
+            raise ValueError(f"Invalid 8-bit BMP palette size={palette_bytes} in {p}")
+        n_colors = palette_bytes // 4
+        palette = data[14 + dib_size : pixel_offset]
+        # palette entries are B,G,R,0
+        pal = np.frombuffer(palette, dtype=np.uint8).reshape(n_colors, 4)[:, :3]
+        pal_rgb = pal[:, ::-1].astype(np.float64)  # (n,3) RGB
+        pal_lum = pal_rgb.mean(axis=1) / 255.0  # (n,)
+
+        # each row padded to 4-byte boundary (1 byte per pixel)
+        row_bytes = ((w + 3) // 4) * 4
+
+        for row in range(height):
+            src_row = (height - 1 - row) if bottom_up else row
+            start = pixel_offset + src_row * row_bytes
+            end = start + w
+            idx = np.frombuffer(data[start:end], dtype=np.uint8)
+            mask[row, :] = pal_lum[idx]
 
     return mask[..., None]
 
