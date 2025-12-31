@@ -97,6 +97,7 @@ logs/
 # Project-specific: data & generated outputs
 # =========================================
 # Ignore local datasets and generated analysis artifacts
+**/artifacts/
 data/*
 outputs/*
 
