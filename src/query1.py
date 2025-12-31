@@ -19,8 +19,7 @@ def main() -> None:
     cfg = DatasetConfig(test_ratio=0.2, seed=0)
     split = load_balanced_split(cfg)
 
-    # Subspace dimension k (heuristic). Keep it <= min(N_train, D).
-    # For face vectors, small-to-moderate k often works.
+    # Build 3D subspaces S1, S2 from train sets.
     n_train = min(split.a_train.shape[0], split.b_train.shape[0])
     d = split.a_train.shape[1]
     k = min(3, n_train - 1, d)

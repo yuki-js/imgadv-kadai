@@ -3,7 +3,7 @@
 2で得られた差分部分空間の基底ベクトルを画像として可視化する。
 
 - 差分部分空間: A = P1 - P2 の固有ベクトル (|固有値|の大きい順)
-- 基底ベクトルは 32x32x3 の画像にreshapeして表示・保存する。
+- 基底ベクトルは 48x48x1 の画像にreshapeして表示・保存する。
 
 Run:
     python -m src.query3
@@ -24,19 +24,19 @@ from src.dataload import DatasetConfig, load_balanced_split
 from src.subspace_construction import SubspaceConstructor, difference_subspace
 
 
-def _vec_to_rgb_image(v: np.ndarray, *, h: int = 32, w: int = 32) -> np.ndarray:
-    """Convert a basis vector (D,) into an RGB image (H,W,3) in [0,1].
+def _vec_to_gray_image(v: np.ndarray, *, h: int = 48, w: int = 48) -> np.ndarray:
+    """Convert a basis vector (D,) into a grayscale image (H,W) in [0,1].
 
     Notes:
         - Basis vectors can have negative values; we min-max normalize per vector.
         - If the vector is (almost) constant, returns zeros.
     """
 
-    v = np.asarray(v, dtype=np.float64).reshape(h, w, 3)
+    v = np.asarray(v, dtype=np.float64).reshape(h, w)
     vmin = float(v.min())
     vmax = float(v.max())
     if np.isclose(vmax, vmin):
-        return np.zeros((h, w, 3), dtype=np.float64)
+        return np.zeros((h, w), dtype=np.float64)
     return (v - vmin) / (vmax - vmin)
 
 
@@ -67,12 +67,12 @@ def main() -> None:
     imgs = []
     for i in range(ds.basis.shape[1]):
         v = ds.basis[:, i]
-        img = _vec_to_rgb_image(v)
+        img = _vec_to_gray_image(v)
         imgs.append(img)
 
         p = out_dir / f"query3_basis_{i}.png"
         plt.figure(figsize=(3, 3))
-        plt.imshow(img)
+        plt.imshow(img, cmap="gray", vmin=0.0, vmax=1.0)
         plt.axis("off")
         plt.title(f"basis[{i}]  eig={evals[i]:+.4f}")
         plt.tight_layout()
@@ -83,7 +83,7 @@ def main() -> None:
     n = len(imgs)
     fig, axes = plt.subplots(1, n, figsize=(3 * n, 3), squeeze=False)
     for i, ax in enumerate(axes[0]):
-        ax.imshow(imgs[i])
+        ax.imshow(imgs[i], cmap="gray", vmin=0.0, vmax=1.0)
         ax.axis("off")
         ax.set_title(f"eig={evals[i]:+.4f}")
     fig.suptitle("Query3: Difference-subspace basis vectors (min-max normalized)")
